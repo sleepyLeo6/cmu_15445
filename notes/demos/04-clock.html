@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Clock：Pin、访问位与脏页替换</title>
+<style>
+:root{color-scheme:light dark;--bg:#f7f9fc;--fg:#1b3048;--panel:#fff;--line:#bdcbd9;--muted:#475f78;--accent:#145da8;--current:#e2efff;--reserved:#fff0d4}
+@media(prefers-color-scheme:dark){:root{--bg:#111c28;--fg:#e5eef7;--panel:#1b2a3c;--line:#637c94;--muted:#b9ccde;--accent:#9acaff;--current:#203f62;--reserved:#514225}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.65 system-ui,-apple-system,sans-serif}main{max-width:940px;padding:28px 22px;margin:auto}h1{font-size:clamp(23px,4vw,32px);line-height:1.35;margin:0 0 10px}h2{font-size:20px;margin:24px 0 10px}p{margin:10px 0}a{color:var(--accent)}.muted{color:var(--muted)}.controls{display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin:22px 0}button{font:inherit;min-height:44px;padding:8px 16px;background:var(--panel);color:var(--fg);border:1px solid var(--line);border-radius:7px;cursor:pointer}button:disabled{opacity:.45;cursor:default}button:focus-visible{outline:3px solid var(--accent);outline-offset:3px}.state{padding:18px;background:var(--panel);border:1px solid var(--line);border-radius:10px}.state h2{margin-top:0}#action{min-height:3.3em}.ring{display:flex;flex-wrap:wrap;gap:6px;align-items:center;font-variant-numeric:tabular-nums}.ring span{padding:6px 10px;border:1px solid var(--line);border-radius:5px}.ring .active{background:var(--current);font-weight:700;outline:2px solid var(--accent)}table{width:100%;border-collapse:collapse;table-layout:fixed;font-size:15px;margin:14px 0}th,td{padding:10px 6px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top;overflow-wrap:anywhere}th{font-weight:600}caption{text-align:left;font-size:14px;color:var(--muted);margin:12px 0 5px}tr.current{background:var(--current)}tr.reserved{background:var(--reserved)}.map{display:flex;flex-wrap:wrap;gap:8px;margin:10px 0}.mapping{padding:5px 10px;background:var(--current);border-radius:5px;font-variant-numeric:tabular-nums}.focus{border-left:4px solid var(--accent);padding-left:12px}li{margin:6px 0}.footnote{font-size:14px;color:var(--muted)}@media(max-width:480px){main{padding:20px 12px}.state{padding:12px}th,td{font-size:12px;padding:9px 3px}.ring span{padding:5px 7px}}
+</style>
+</head>
+<body>
+<main>
+<h1>Clock：Pin、访问位与脏页替换</h1>
+<p class="muted">缓冲池已满，正在请求新页 E。预测下一步会跳过、清访问位、写回，还是复用 Frame。</p>
+<div class="controls" aria-label="步骤控制"><button id="prev" type="button">上一步</button><button id="next" type="button">下一步</button><button id="reset" type="button">重置</button><span id="count"></span></div>
+<section class="state" aria-labelledby="title">
+<div aria-live="polite" aria-atomic="true"><h2 id="title"></h2><p id="action"></p></div>
+<div id="ring" class="ring" role="img" aria-label="时钟指针与Frame顺序"></div>
+<p class="footnote">循环顺序 F0 → F1 → F2 → F3 → F0；标注“指针”的位置是下一次检查点。</p>
+<table><caption>每一步完成后的 Frame 状态；I/O 期间已选中的 Frame 被预留</caption><thead><tr><th scope="col">Frame</th><th scope="col">Page</th><th scope="col">Pin</th><th scope="col">访问位</th><th scope="col">Dirty</th><th scope="col">预留</th></tr></thead><tbody id="frames"></tbody></table>
+<h2>Page Table</h2><div id="mapping" class="map" aria-label="驻留页映射"></div>
+<p id="io" class="footnote"></p><p id="lesson" class="focus"></p>
+</section>
+<h2>这个演示采用的模型</h2>
+<ul>
+<li>初始页 A、B、C、D 已驻留；E 还未读入。访问位与 Pin Count 相互独立。</li>
+<li>跳过被 Pin 的页，不修改其访问位；访问位为 1 的可淘汰页获得第二次机会。</li>
+<li>选中 C 后先预留 F2，避免被其他请求占用。假定日志顺序等恢复条件已满足，所有 I/O 都成功。</li>
+<li>写回完成后 C 仍可留在 F2；本次因为需要装入 E，才在下一步替换它。E 装入后被 Pin，使用者释放后才重新可淘汰。</li>
+<li>这里串行执行并省略实际 Latch、加载等待者与失败回滚。真实实现必须处理这些状态，不能照抄为并发流程。</li>
+</ul>
+<p class="footnote">原理来源：课件 PDF 页 22–31、63–76、173–174；具体初始状态为教学设定。原生文件无需网络依赖。</p>
+<p><a href="../04_bufferpool.md">返回学习笔记 §5.2</a></p>
+<noscript><p>此演示需要 JavaScript；笔记 §5.2 保留相同的完整静态推演。</p></noscript>
+</main>
+<script>
+'use strict';
+const clone=value=>JSON.parse(JSON.stringify(value));
+const frames=[
+ {page:'A',pin:1,ref:0,dirty:false,reserved:false},
+ {page:'B',pin:0,ref:1,dirty:false,reserved:false},
+ {page:'C',pin:0,ref:0,dirty:true,reserved:false},
+ {page:'D',pin:0,ref:1,dirty:false,reserved:false}
+];
+let hand=0,writes=0,reads=0;
+const steps=[];
+function save(title,action,lesson){steps.push({title,action,lesson,hand,writes,reads,frames:clone(frames)});}
+save('初始：需要为 E 找一个 Frame','四个 Frame 都有页，指针从 F0 开始。先检查安全条件，再看访问位。','预测：A 的访问位是 0，但 Pin=1，能否淘汰？');
+hand=1;
+save('检查 F0：跳过被 Pin 的 A','A 仍被使用，不能用 E 覆盖它。指针移到 F1，A 的访问位保持 0。','Pin 保证页不会被替换；访问位不能推翻这个约束。');
+frames[1].ref=0;hand=2;
+save('检查 F1：给 B 第二次机会','B 的 Pin=0、访问位=1。把访问位清为 0，保留 B，指针移到 F2。','清访问位不是淘汰；B 的 Page Table 映射仍然存在。');
+frames[2].reserved=true;
+save('检查 F2：选中并预留 C','C 的 Pin=0、访问位=0，可以成为候选。但 Dirty=true，暂时不能覆盖；预留 F2 供后续 I/O。','候选选择、写回和 Frame 复用，是三个不同的动作。');
+frames[2].dirty=false;writes++;
+save('写回 C：现在可以安全丢弃旧副本','假定恢复顺序已满足且 I/O 成功，C 的当前修改已写回。此时 C 仍在 F2，映射还未移除。','Flush 并不自动 Evict：干净的 C 可以继续驻留。');
+frames[2]={page:'E',pin:1,ref:1,dirty:false,reserved:false};reads++;hand=3;
+save('复用 F2：移除 C，读入 E 并 Pin','用 E 替换 C，更新映射为 E → F2。读入完成后才提供给使用者；指针移到 F3。','Frame ID 仍是 F2，但它保存的 Page ID 已从 C 变成 E。');
+frames[2].pin=0;
+save('使用结束：Unpin E','E 的 Pin 从 1 减为 0，访问位仍是 1。E 保留在 F2，供下次命中；指针仍在 F3。','Unpin 释放使用权，不代表立即淘汰或立即写回。');
+function validate(step){
+ if(step.hand<0||step.hand>=4)throw Error('时钟指针越界');
+ if(new Set(step.frames.map(frame=>frame.page)).size!==4)throw Error('页映射不唯一');
+ for(const frame of step.frames){
+  if(frame.pin<0||![0,1].includes(frame.ref))throw Error('元数据非法');
+  if(frame.reserved&&frame.pin>0)throw Error('不能预留仍被使用的页作替换');
+ }
+}
+steps.forEach(validate);
+let current=0;
+function cell(row,value){const td=document.createElement('td');td.textContent=String(value);row.append(td);}
+function render(){
+ const state=steps[current];
+ for(const id of ['title','action','lesson'])document.getElementById(id).textContent=state[id];
+ document.getElementById('count').textContent=`步骤 ${current+1} / ${steps.length}`;
+ document.getElementById('prev').disabled=current===0;
+ document.getElementById('next').disabled=current===steps.length-1;
+ const ring=document.getElementById('ring');ring.replaceChildren();
+ ring.setAttribute('aria-label',`指针位于 F${state.hand}；循环顺序 F0、F1、F2、F3`);
+ state.frames.forEach((frame,i)=>{const span=document.createElement('span');span.textContent=`F${i}${i===state.hand?' ← 指针':''}`;if(i===state.hand)span.className='active';ring.append(span);});
+ const body=document.getElementById('frames');body.replaceChildren();
+ const mapping=document.getElementById('mapping');mapping.replaceChildren();
+ state.frames.forEach((frame,i)=>{
+  const row=document.createElement('tr');row.className=frame.reserved?'reserved':i===state.hand?'current':'';
+  [`F${i}`,frame.page,frame.pin,frame.ref,frame.dirty?'是':'否',frame.reserved?'是':'否'].forEach(value=>cell(row,value));body.append(row);
+  const span=document.createElement('span');span.className='mapping';span.textContent=`${frame.page} → F${i}`;mapping.append(span);
+ });
+ document.getElementById('io').textContent=`从演示开始累计：页写回 ${state.writes} 次，页读取 ${state.reads} 次（不计初始四页的加载）。`;
+}
+document.getElementById('prev').addEventListener('click',()=>{current=Math.max(0,current-1);render();});
+document.getElementById('next').addEventListener('click',()=>{current=Math.min(steps.length-1,current+1);render();});
+document.getElementById('reset').addEventListener('click',()=>{current=0;render();});
+render();
+</script>
+</body>
+</html>

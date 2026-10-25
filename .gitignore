@@ -1,2 +1,4 @@
 img/
 *.pdf
+.DS_Store
+AGENTS.md

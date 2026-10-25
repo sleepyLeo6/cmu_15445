@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Slotted Page：插入、删除与整理</title>
+<style>
+:root{color-scheme:light dark;--bg:#f8fafc;--fg:#15283e;--panel:#fff;--line:#bac8d6;--muted:#425b73;--accent:#155bb0;--header:#e1e7ef;--slot:#d3dff5;--free:#f2f5f8;--hole:#ffe8bc;--a:#cfe8fa;--b:#ffdfb1;--c:#bde5d3;--d:#e4d5f6}
+@media(prefers-color-scheme:dark){:root{--bg:#101923;--fg:#e5edf5;--panel:#182635;--line:#687d92;--muted:#becddd;--accent:#93c6ff;--header:#34475c;--slot:#344c77;--free:#1d2d3e;--hole:#604721;--a:#244e6f;--b:#654722;--c:#255843;--d:#4c3b65}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.65 system-ui,-apple-system,sans-serif}main{max-width:980px;margin:auto;padding:28px 22px}h1{font-size:clamp(23px,4vw,32px);line-height:1.3;margin:0 0 12px}h2{font-size:20px;margin:25px 0 10px}p{margin:8px 0}a{color:var(--accent)}.intro,.hint{color:var(--muted)}.controls{display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin:22px 0}button{font:inherit;padding:8px 16px;min-height:44px;background:var(--panel);color:var(--fg);border:1px solid var(--line);border-radius:7px;cursor:pointer}button:disabled{opacity:.45;cursor:default}button:focus-visible{outline:3px solid var(--accent);outline-offset:3px}#step-count{font-variant-numeric:tabular-nums}.state{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:18px}.state h2{margin-top:0}#action{min-height:3.3em}.metrics{display:flex;flex-wrap:wrap;gap:10px 28px;margin:14px 0}.metrics span{display:block;font-size:14px;color:var(--muted)}.metrics strong{font-size:22px;font-variant-numeric:tabular-nums}.scale{display:flex;justify-content:space-between;font-size:13px;color:var(--muted);margin:16px 0 4px}.memory{display:grid;grid-template-columns:repeat(256,minmax(0,1fr));border:1px solid var(--line);min-height:88px}.segment{display:flex;align-items:center;justify-content:center;border-right:1px solid var(--line);min-width:0;font-size:13px;overflow-wrap:anywhere;line-height:1.2}.segment:last-child{border-right:0}.header{background:var(--header)}.slot{background:var(--slot)}.free{background:var(--free)}.hole{background:var(--hole)}.rec-a{background:var(--a)}.rec-b{background:var(--b)}.rec-c{background:var(--c);box-shadow:inset 0 0 0 3px var(--accent)}.rec-d{background:var(--d)}table{border-collapse:collapse;width:100%;font-size:15px;margin:12px 0}th,td{text-align:left;border-bottom:1px solid var(--line);padding:9px 7px;vertical-align:top;overflow-wrap:anywhere}th{font-weight:600}caption{text-align:left;color:var(--muted);font-size:14px;margin-bottom:4px}.focus{border-left:4px solid var(--accent);padding-left:12px;margin:15px 0}.legend{display:flex;gap:8px 18px;flex-wrap:wrap;font-size:14px;margin:10px 0}.swatch{display:inline-block;vertical-align:middle;width:14px;height:14px;margin-right:5px;border:1px solid var(--line)}code{font-size:.94em}.assumptions{font-size:14px;color:var(--muted);margin-top:25px}li{margin:5px 0}footer{margin-top:24px;font-size:14px}@media(max-width:480px){main{padding:20px 12px}.state{padding:12px}th,td{padding:8px 4px;font-size:13px}.segment{font-size:11px}.metrics{gap:10px 16px}.metrics strong{font-size:19px}}
+</style>
+</head>
+<body>
+<main>
+<h1>Slotted Page：插入、删除与整理</h1>
+<p class="intro">观察同一页中的记录如何移动，以及槽号为什么可以保持不变。先预测下一步，再点击核对。</p>
+<div class="controls" aria-label="演示步骤控制">
+<button id="prev" type="button">上一步</button>
+<button id="next" type="button">下一步</button>
+<button id="reset" type="button">重置</button>
+<span id="step-count"></span>
+</div>
+<section class="state" aria-labelledby="step-title">
+<div aria-live="polite" aria-atomic="true"><h2 id="step-title"></h2><p id="action"></p></div>
+<div class="metrics">
+<div><span>总空闲（含空洞）</span><strong id="total"></strong></div>
+<div><span>前部连续空闲</span><strong id="contiguous"></strong></div>
+<div><span>最大空闲段</span><strong id="largest"></strong></div>
+</div>
+<div class="scale"><span>低地址 · offset 0</span><span>页尾 · offset 256（不含）</span></div>
+<div id="memory" class="memory" role="img" aria-label="页内字节布局"></div>
+<div class="legend"><span><i class="swatch header"></i>页头</span><span><i class="swatch slot"></i>槽数组</span><span><i class="swatch free"></i>前部空闲</span><span><i class="swatch hole"></i>删除形成的空洞</span><span>C 的色块带轮廓强调</span></div>
+<p class="hint">色块宽度与字节数成比例。记录使用字母区分，槽号与精确偏移见下表。</p>
+<table><caption>Page 7 的槽位映射；范围使用 [起点, 终点)</caption><thead><tr><th scope="col">槽号</th><th scope="col">记录 / 状态</th><th scope="col">offset</th><th scope="col">长度</th><th scope="col">字节范围</th></tr></thead><tbody id="slots"></tbody></table>
+<p id="rid" class="focus"></p>
+<details><summary>查看全部字节区间</summary><table><thead><tr><th scope="col">内容</th><th scope="col">范围</th><th scope="col">大小</th></tr></thead><tbody id="ranges"></tbody></table></details>
+</section>
+<section class="assumptions"><h2>教学模型与边界</h2><ul>
+<li>固定 256 B 页，Page Header 24 B，每个槽位 8 B；记录长度包含 Tuple Header。槽位字段大小仅为教学设定。</li>
+<li>记录从页尾向前分配。删除使槽位无效，空间立即可回收，但不自动整理，也不缩短槽数组；无效槽可复用。</li>
+<li>暂不考虑事务、并发、日志与对齐。这里的整理是单页内字节搬移，不是 LSM 文件合并。</li>
+<li>整理须保持有效记录与槽号的对应关系、记录字节不重叠、目录与记录区不重叠。总空闲量在整理前后相同。</li>
+<li>RID 稳定仅针对同页内的存活记录。删除后槽位可被新记录复用，不提供永久业务身份。</li>
+</ul></section>
+<footer><a href="../03_storage1.md">返回学习笔记 §3.4</a> · 原理来源：课件 PDF 页 69–81；具体数值为笔记中的补充例子。</footer>
+<noscript><p>此演示需要 JavaScript。请阅读笔记 §3.4 的静态状态表，其中包含相同的完整推演。</p></noscript>
+</main>
+<script>
+'use strict';
+const PAGE_SIZE = 256, HEADER_SIZE = 24, SLOT_SIZE = 8;
+const clone = value => JSON.parse(JSON.stringify(value));
+const directoryEnd = page => HEADER_SIZE + page.slots.length * SLOT_SIZE;
+function insert(page, key, length) {
+  let index = page.slots.findIndex(slot => slot === null);
+  const newSlot = index === -1;
+  const needed = length + (newSlot ? SLOT_SIZE : 0);
+  if (page.frontier - directoryEnd(page) < needed) return false;
+  if (newSlot) index = page.slots.length;
+  page.frontier -= length;
+  page.slots[index] = {key, length, offset: page.frontier};
+  return true;
+}
+function compact(page) {
+  let cursor = PAGE_SIZE;
+  page.slots.filter(Boolean).sort((a,b) => b.offset-a.offset).forEach(slot => {
+    cursor -= slot.length;
+    slot.offset = cursor;
+  });
+  page.frontier = cursor;
+}
+function intervals(page) {
+  const end = directoryEnd(page), parts = [{start:0,end:HEADER_SIZE,label:'Page Header',kind:'header'}];
+  page.slots.forEach((slot,i) => parts.push({start:HEADER_SIZE+i*SLOT_SIZE,end:HEADER_SIZE+(i+1)*SLOT_SIZE,label:`Slot ${i}${slot?'':'（无效）'}`,kind:'slot'}));
+  let cursor = end;
+  const records = page.slots.filter(Boolean).sort((a,b)=>a.offset-b.offset);
+  const gap = (start,stop) => { if(stop>start) parts.push({start,end:stop,label:start<page.frontier?'前部空闲':'删除后的空洞',kind:start<page.frontier?'free':'hole'}); };
+  records.forEach(slot => {
+    gap(cursor,slot.offset);
+    parts.push({start:slot.offset,end:slot.offset+slot.length,label:slot.key,kind:`rec-${slot.key.toLowerCase()}`});
+    cursor=slot.offset+slot.length;
+  });
+  gap(cursor,PAGE_SIZE);
+  return parts;
+}
+function metrics(page) {
+  const gaps = intervals(page).filter(part=>part.kind==='free'||part.kind==='hole');
+  return {total:gaps.reduce((sum,part)=>sum+part.end-part.start,0),contiguous:page.frontier-directoryEnd(page),largest:Math.max(0,...gaps.map(part=>part.end-part.start))};
+}
+const steps = [], page = {slots:[],frontier:PAGE_SIZE};
+function save(title,action) { steps.push({title,action,page:clone(page)}); }
+save('空页：先为页头保留 24 B','此时没有槽位和记录，剩余 232 B 连续可用。');
+insert(page,'A',48);save('插入 A：新建 Slot 0','A 占 [208,256)，新增一个 8 B 槽位。前部连续空闲为 208 − 32 = 176 B。');
+insert(page,'B',64);save('插入 B：新建 Slot 1','B 占 [144,208)，Slot 1 保存它的位置。目录末端前进到 offset 40。');
+insert(page,'C',48);save('插入 C：新建 Slot 2','C 占 [96,144)。3 个槽位共 24 B；页头与槽数组合计 48 B，前部剩余 48 B。');
+page.slots[1]=null;save('删除 B：留下一个 64 B 空洞','Slot 1 变为无效，但槽数组不缩短。空洞 [144,208) 与前部 [48,96) 不相邻，总空闲增至 112 B。');
+const beforeFailedInsert = JSON.stringify(page);
+const inserted = insert(page,'D',80);
+if(inserted || JSON.stringify(page)!==beforeFailedInsert) throw new Error('失败插入不应修改页面');
+save('尝试插入 D（80 B）：失败','可复用 Slot 1，因此无需新增槽位；但前部只有 48 B，最大空闲段也只有 64 B。112 B 总空闲无法直接提供连续的 80 B。');
+compact(page);save('整理：移动 C，更新 Slot 2','A 保持 @208，C 从 @96 移至 @160。Slot 2 更新为 160，槽号不变；总空闲仍是 112 B，现在合并为 [48,160)。');
+if(!insert(page,'D',80)) throw new Error('整理后应能插入 D');
+save('再次插入 D：复用 Slot 1','D 占 [80,160)，Slot 1 从无效变为 D @80。槽数组仍是 3 项，前部剩余 32 B。旧 B 的位置标识不能作为永久身份。');
+function validate(page) {
+  const parts=intervals(page);
+  if(directoryEnd(page)>page.frontier) throw new Error('目录与记录区重叠');
+  let cursor=0;
+  for(const part of parts) {
+    if(part.start!==cursor||part.end<=part.start||part.end>PAGE_SIZE) throw new Error('字节区间未完整分区');
+    cursor=part.end;
+  }
+  if(cursor!==PAGE_SIZE) throw new Error('页大小不一致');
+  const expected=PAGE_SIZE-directoryEnd(page)-page.slots.filter(Boolean).reduce((sum,slot)=>sum+slot.length,0);
+  if(metrics(page).total!==expected) throw new Error('空间记账不一致');
+}
+steps.forEach(step=>validate(step.page));
+if(metrics(steps[5].page).total!==metrics(steps[6].page).total) throw new Error('整理不能改变总空闲');
+let current=0;
+function cell(row,value) {const td=document.createElement('td');td.textContent=value;row.append(td);}
+function render() {
+  const step=steps[current], p=step.page, m=metrics(p), parts=intervals(p);
+  document.getElementById('step-title').textContent=`${current}. ${step.title}`;
+  document.getElementById('action').textContent=step.action;
+  document.getElementById('step-count').textContent=`步骤 ${current+1} / ${steps.length}`;
+  for(const id of ['total','contiguous','largest']) document.getElementById(id).textContent=`${m[id]} B`;
+  document.getElementById('prev').disabled=current===0;
+  document.getElementById('next').disabled=current===steps.length-1;
+  const memory=document.getElementById('memory');memory.replaceChildren();
+  memory.setAttribute('aria-label',parts.map(part=>`${part.label} [${part.start},${part.end})`).join('；'));
+  const rangeRows=document.getElementById('ranges');rangeRows.replaceChildren();
+  for(const part of parts) {
+    const block=document.createElement('div');block.className=`segment ${part.kind}`;
+    block.style.gridColumn=`span ${part.end-part.start}`;
+    block.setAttribute('aria-hidden','true');
+    block.textContent=part.kind==='header'?'页头':part.kind.startsWith('rec-')?part.label:'';
+    memory.append(block);
+    const row=document.createElement('tr');cell(row,part.label);cell(row,`[${part.start}, ${part.end})`);cell(row,`${part.end-part.start} B`);rangeRows.append(row);
+  }
+  const rows=document.getElementById('slots');rows.replaceChildren();
+  if(!p.slots.length){const row=document.createElement('tr');const td=document.createElement('td');td.colSpan=5;td.textContent='尚未分配槽位';row.append(td);rows.append(row);}
+  p.slots.forEach((slot,i)=>{const row=document.createElement('tr');cell(row,i);cell(row,slot?slot.key:'无效，可复用');cell(row,slot?slot.offset:'—');cell(row,slot?`${slot.length} B`:'—');cell(row,slot?`[${slot.offset}, ${slot.offset+slot.length})`:'—');rows.append(row);});
+  const c=p.slots[2];
+  document.getElementById('rid').textContent=c?`追踪 C：RID (Page 7, Slot 2) → offset ${c.offset} → C。${current>=6?'C 已搬移，RID 仍通过 Slot 2 定位它。':'下一步关注整理时 offset 的变化。'}`:'追踪目标：C 插入后，用 RID (Page 7, Slot 2) 观察它的定位关系。';
+}
+document.getElementById('prev').addEventListener('click',()=>{current=Math.max(0,current-1);render();});
+document.getElementById('next').addEventListener('click',()=>{current=Math.min(steps.length-1,current+1);render();});
+document.getElementById('reset').addEventListener('click',()=>{current=0;render();});
+render();
+</script>
+</body>
+</html>
