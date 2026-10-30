@@ -394,6 +394,14 @@ Step 2：访问 Bucket Chain
 
 由于不同 Key 可能产生相同的 Bucket Index，因此 Bucket 内需要解决 Hash Collision。
 
+# Part 4: CacheLib Eviction Policy — 缓存淘汰策略
+
+https://chatgpt.com/s/t_6ae40f3b24288191977bb29c21eaab56
+
+# Part 5: Slab Rebalancing — CacheLib 如何动态调整内存？
+
+https://chatgpt.com/s/t_6ae40f674fe48191b8fc4938abb24b89
+
 # Part 6：Hybrid Cache & Navy — CacheLib 的 SSD 缓存架构
 
 本节重点解决四个问题：
